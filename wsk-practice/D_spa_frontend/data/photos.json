@@ -1,0 +1,11 @@
+{
+  "data": [
+    {"id":1,"title":"Charyn Canyon","author":"Aigerim","tags":["nature","canyon"],"url":"https://picsum.photos/id/1018/800/600"},
+    {"id":2,"title":"Almaty Skyline","author":"Dauren","tags":["city"],"url":"https://picsum.photos/id/1015/800/600"},
+    {"id":3,"title":"Steppe Sunrise","author":"Madina","tags":["nature","sunrise"],"url":"https://picsum.photos/id/1016/800/600"},
+    {"id":4,"title":"Old Market","author":"Ruslan","tags":["city","people"],"url":"https://picsum.photos/id/1011/800/600"},
+    {"id":5,"title":"Lake Kaindy","author":"Aliya","tags":["nature","lake"],"url":"https://picsum.photos/id/1039/800/600"},
+    {"id":6,"title":"Night Streets","author":"Dauren","tags":["city","night"],"url":"https://picsum.photos/id/1025/800/600"}
+  ],
+  "meta": {"page":1,"per_page":10,"total":6}
+}
