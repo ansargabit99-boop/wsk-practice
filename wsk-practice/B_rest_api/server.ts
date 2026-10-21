@@ -75,11 +75,19 @@ app.post("/users/register",async(req,res)=>{
 })
 
 app.get("/books",async(req,res)=>{
-    const {search,page} = req.query
-    let query = "SELECT * FROM books WHERE"
+    const {author,title,minCopies} = req.body
+    
+    let query = "SELECT * FROM books"
+    const conditions = []
+    const values = []
 })
 app.post("/books",async(req,res)=>{
-    
+    const {title,author,isbn} = req.body
+    if (!title || !author ||!isbn) {
+        return res.status(400).json({message:"bad request"})
+    }
+    const newBook = await pool.query("INSERT INTO books (title,author,isbn) VALUES($1,$2,$3) RETURNING *",[title,author,isbn])
+    res.status(201).json({data:newBook.rows[0]})
 })
 const PORT = 3000
 
