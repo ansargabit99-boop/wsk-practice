@@ -1,96 +1,223 @@
-import express from 'express'
-import cors from "cors"
-import { Request,Response,NextFunction } from 'express'
-import pool from './database'
+import express, { json } from "express"
+import { Request,Response,NextFunction } from "express"
+import pool from "./database.ts"
+import bcrypt  from "bcryptjs"
 import jwt from "jsonwebtoken"
-import bcrypt from 'bcryptjs'
+import dotenv from "dotenv"
+dotenv.config()
 const app = express()
 app.use(express.json())
-app.use(cors())
 
 
-function generateToken(id:number) {
-    return jwt.sign({id},process.env.JWT_SECRET!,{
+
+const port = 3000
+
+function generateToken(id:number,role:string) {
+    return jwt.sign({id,role},process.env.JWT_SECRET!,{
         expiresIn:"30d"
     })
 }
-function middleware(req:any,res:Response,next:NextFunction) {
-    const auth = req.headers.authorization
-    if (!auth) {
-        return res.status(401).json({message:"unauthorised"})
-    }
-    const token = auth.split(" ")[1]
-    if(!token) {
-        return res.status(401).json({message:"unauthorised"})
-    }
-   
-    const decoded = jwt.verify(token,process.env.JWT_SECRET!)
-    req.user = decoded
-    next()
-}
-app.post("/users/login",async(req,res)=>{
+async function middleware(req:any,res:Response,next:NextFunction) {
     try {
-        
-        const {gmail,password} =req.body
-        if (!gmail || password) {
-            res.status(400).json({message:"please fill in all required fields"})
-            return
+        const auth = req.headers.authorization
+        if(!auth) {
+            return res.status(403).json({message:"unauthorised"})
         }
-        const user = await pool.query("SELECT * FROM users WHERE email=$1",gmail)
+        const token = auth.split(" ")[1]
+        
+        const decoded = jwt.verify(token,process.env.JWT_SECRET!)
+        req.user = decoded
+        next()
+    } catch(err) {
+        console.log(err)
+        return res.status(403).json({message:"acces denied"})
+    }
+}
+async function isAdmin(req:any,res:Response,next:NextFunction) {
+    try {
+        const {id,role} = req.user
+        if(role ==="admin") {
+            next()
+        }else {
+            return res.status(403).json({message:"unauthorised"})
+        }
+    } catch (err) {
+        console.log(err)
+        return res.status(403).json({message:"unauthorised"})
+    }
+}
+app.post("/api/register",async(req,res)=>{
+    try {
+        const {email,password,name} = req.body
+        if (!email || !password || name) {
+            return res.status(400).json({message:"you forgot something"})
+        }
+        const ifExists = await pool.query("SELECT id,name,email,role FROM users WHERE email = $1",[email])
+        if (ifExists.rows.length === 0) {
+            return res.status(400).json({message:"the user with this email already exists"})
+
+        }
+        const hashed = await bcrypt.hash(password,10)
+        const result = await pool.query("INSERT INTO users (gmail,password,name) VALUES($1,$2,$3) RETURNING id,email,name,role",[email,hashed,name])
+        const token = generateToken(result.rows[0].id,result.rows[0].role)
+        res.status(200).json({token,user:result.rows[0]})
+        
+    }catch (err) {
+        console.log(err)
+        res.status(500).json({message:"something went wrong"})
+    }
+})
+app.post("/api/login",async(req,res)=>{
+    try {
+        const {email,password} = req.body
+        if (!email || !password) {
+            return res.status(400).json({message:"something went wrong"})
+        }
+        const user = await pool.query("SELECT * FROM users WHERE email=$1",[email])
         if (user.rows.length === 0) {
+            return res.status(404).json({message:"the user with this email doesnt'exist"})
+        }
+        const isValid = await bcrypt.compare(password,user.rows[0].password)
+        if(!isValid) {
+            return res.json({message:"incorrect credentials"})
+        }
+        const token = generateToken(user.rows[0].id,user.rows[0].role)
+        res.status(200).json({token,user:user.rows[0]})
+    } catch(err) {
+        console.log(err)
+        return res.status(500).json({message:"something went wrong"})
+    }
+})
+app.get("/api/books",middleware,async(req,res)=>{
+    try {
+        const {search,page} = req.query
+        let pageNum = Math.max(1,
+            typeof(page) === "string" ? parseInt(page,10) : 1)
+        const limit = 10
+        const offset = (pageNum - 1) * limit
+        let query = "SELECT * FROM books"
+        const values = []
+        let i = 1
+
+        if(search) {
+            query += ` WHERE (title ILIKE($${i++} OR author ILIKE($${i++}))`
+            values.push(`%${search}%`)
+        }
+        
+        query += ` ORDER by id LIMIT $${i++} OFFSET $${i++}`
+        values.push(limit,offset)
+
+        const result = await pool.query(query,values)
+        return res.status(200).json({
+            pageNum,
+            limit,
+            books:result.rows
+        })
+    }catch(err) {
+        console.log(err)
+        return res.status(500).json({message:"something went wrong"})
+    }
+})
+app.get("/api/books/:id",middleware,async(req,res)=>{
+    try {
+        const {id} = req.params
+        const exist = await pool.query("SELECT * FROM books WHERE id=$1",[id])
+        if (exist.rows.length === 0) {
+            return res.status(404).json({message:"couldn find the book"})
+        }
+        res.status(200).json({book:exist.rows[0]})
+
+    } catch(err) {
+        console.log(err)
+        return res.status(500).json({message:"something went wrong"})
+    }
+})
+
+app.post("/api/books",middleware,isAdmin,async(req,res)=>{
+    try {
+        const {title,author,isbn} = req.body
+        if (!title || !author || !isbn) {
+             return res.status(400).json({message:"you missed something"})
+        }
+        const newBook = await pool.query("INSERT INTO books (title,author,isbn) VALUES($1,$2,$3) RETURNING *",[title,author,isbn])
+        res.status(201).json({message:"new book succesfully posted"})
+    } catch (err) {
+        console.log(err)
+        return res.json({message:"something went wrong"})
+    }
+})
+app.put("/api/books/:id",middleware,isAdmin,async(req,res)=>{
+    try {
+        const {title,author,isbn} = req.body
+        const id = req.params.id
+        const isExist = await pool.query("SELECT * FROM books WHERE id = $1",[id])
+        if (isExist.rows.length === 0) {
+            return res.status(404).json({message:"the book you are willing to put is not found"})
+        }
+        let query = "UPDATE books SET "
+        const changes = []
+        const values = []
+        let i = 1
+        if(title) {
+            changes.push(` title = $${i++}`)
+            values.push(title)
+        }
+        if (author) {
+            changes.push(`author = $${i++}`)
+            values.push(author)
+        }
+        if (isbn) {
+            changes.push(`isbn = $${i++}`)
+            values.push(isbn)
+        }
+        if (values.length === 0) {
+            return res.status(201).json({message:"nothing to change"})
+        }
+        const joins = changes.join(",")
+        query += joins
+        query+=` WHERE id=$${i++}`
+        values.push(id)
+        await pool.query(query,values)
+        
+        res.status(201).json({message:"succesfully updated book info"})
+    }catch(err) {
+        console.log(err)
+        return res.status(500).json({message:"something went wrong"})
+    }
+})
+app.delete("/api/books/:id",middleware,isAdmin,async(req,res)=>{
+    try {
+        const id = req.params.id
+        const isExist = await pool.query("SELECT * FROM books WHERE id=$1",[id])
+        if (isExist.rows.length === 0) {
             return res.status(404).json({message:"not found"})
         }
-        const userPassword = user.rows[0].password
-        const isValid = await bcrypt.compare(password,userPassword)
-        if (!isValid) {
-            return res.status(400).json({message:"incorrect credentials"})
-        }
-        const token = generateToken(user.rows[0].id)
-        return res.status(200).json({name:user.rows[0].name,token})
+        await pool.query("DELETE FROM books WHERE id=$1",[id])
+        return res.status(200).json({message:"succesfully deleted"})
+
     } catch (err) {
-        console.log(err)
+        console.log(err) 
         return res.status(500).json({message:"something went wrong"})
     }
 })
-
-app.post("/users/register",async(req,res)=>{
+app.post("/api/loans",middleware,async(req:any,res)=>{
     try {
-        const {name,gmail,password} = req.body
-        if(!name || !gmail || !password) {
-            return res.status(400).json({message:"please fill in the form"})
-        }
-        const isExist = await pool.query("SELECT * FROM users WHERE gmail=$1",gmail)
-        if (isExist.rows.length > 0) {
-            return res.status(400).json({message:"the user with this mail already exists"})
-        }
-        const hashed  = await bcrypt.hash(password,10)
-        const newUser = await pool.query("INSERT INTO users (name,gmail,password) VALUES($1,$2,$3)  RETURNING id",[name,gmail,password])
-    
-        const token = generateToken(newUser.rows[0].id)
-        return res.json({id:newUser.rows[0].id,token})
-    } catch (err) {
-        console.log(err)
-        return res.status(500).json({message:"something went wrong"})
-    }
-})
+        const {book_id} = req.body
+        const user_id = req.user
 
-app.get("/books",async(req,res)=>{
-    const {author,title,minCopies} = req.body
-    
-    let query = "SELECT * FROM books"
-    const conditions = []
-    const values = []
-})
-app.post("/books",async(req,res)=>{
-    const {title,author,isbn} = req.body
-    if (!title || !author ||!isbn) {
-        return res.status(400).json({message:"bad request"})
+        const bookId = Number(book_id)
+
+        if (!Number(bookId) || bookId <= 0) {
+            return res.status(400).json({message:"book id should be positive integer"})
+        }
+        const client = pool.connect()
+        
+        await client.query("BEGIN")
+    } catch(err) {
+        console.log(err)
+        return res.status(500).json({message:"somethign went wrong"})
     }
-    const newBook = await pool.query("INSERT INTO books (title,author,isbn) VALUES($1,$2,$3) RETURNING *",[title,author,isbn])
-    res.status(201).json({data:newBook.rows[0]})
 })
-const PORT = 3000
-//
-app.listen(PORT,()=>{
+app.listen(port,()=>{
     console.log("starting server")
 })
