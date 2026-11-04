@@ -4,6 +4,7 @@ import pool from "./database.ts"
 import bcrypt  from "bcryptjs"
 import jwt from "jsonwebtoken"
 import dotenv from "dotenv"
+import { Query } from "pg"
 dotenv.config()
 const app = express()
 app.use(express.json())
@@ -201,6 +202,7 @@ app.delete("/api/books/:id",middleware,isAdmin,async(req,res)=>{
     }
 })
 app.post("/api/loans",middleware,async(req:any,res)=>{
+    const client = await pool.connect()
     try {
         const {book_id} = req.body
         const user_id = req.user
@@ -210,10 +212,51 @@ app.post("/api/loans",middleware,async(req:any,res)=>{
         if (!Number(bookId) || bookId <= 0) {
             return res.status(400).json({message:"book id should be positive integer"})
         }
-        const client = pool.connect()
+        
         
         await client.query("BEGIN")
+
+        await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE",[user_id])
+
+        //locking user
+        const activeLoans = await client.query("SELECT COUNT(*) FROM loans WHERE user_id=$1 AND returned_at IS NULL")
+
+        if(Number(activeLoans.rows[0].count >=3)) {
+            await client.query("ROLLBACK")
+
+            return res.status(409).json({message:"maximum active loans reached"})
+        }
+
+        //books
+
+        const bookResult = await client.query("SELECT id,copies FROM books WHERE id=$1 FOR UPDATE",[bookId])
+
+        if (bookResult.rows.length === 0) {
+            await client.query("ROLLBACK")
+
+            return res.status(500).json({message:"the book not found"})
+        }
+
+        const book = bookResult.rows[0]
+
+        const borrowedCopies = await client.query(`
+            SELECT COUNT(*) FROM loans WHERE book_id=$1 AND returned_at IS NULL
+            `,[bookId])
+
+        const availableCopies = book.copies - Number(borrowedCopies.rows[0].count)
+
+        if (availableCopies <= 0) {
+            await client.query("ROLLBACK")
+            
+             return res.status(409).json({message:"No copies available"})
+        }
+        const loanResult = await client.query("INSERT INTO loans (user_id,book_id, loan_date,due_date) VALUES($1,$2,CURRENT_DATE,CURRENT_DATE + 14 days)")
+
+        await client.query("COMMIT")
+
+        return res.status(201).json({message:"book borrowed succesfully",result:loanResult.rows[0]})
     } catch(err) {
+        await client.query("ROLLBACK")
         console.log(err)
         return res.status(500).json({message:"somethign went wrong"})
     }
