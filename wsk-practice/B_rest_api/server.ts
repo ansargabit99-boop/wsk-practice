@@ -205,7 +205,7 @@ app.post("/api/loans",middleware,async(req:any,res)=>{
     const client = await pool.connect()
     try {
         const {book_id} = req.body
-        const user_id = req.user
+        const user_id = req.user.id
 
         const bookId = Number(book_id)
 
@@ -259,6 +259,64 @@ app.post("/api/loans",middleware,async(req:any,res)=>{
         await client.query("ROLLBACK")
         console.log(err)
         return res.status(500).json({message:"somethign went wrong"})
+    } finally {
+        client.release()
+    }
+})
+app.get("/api/loans",middleware,async(req:any,res)=>{
+    try {
+        const user_id = req.user
+        const myLoans = await pool.query("SELECT * FROM loans WHERE user_id=$1",[user_id])
+
+        return res.status(200).json({data:myLoans.rows})
+        
+    } catch (err) {
+        console.log(err) 
+        return res.status(500).json({message:"something went wrong"})
+    }
+})
+app.post("/api/loans/:id/return",middleware,async(req:any,res)=>{
+    const client = await pool.connect()
+    try {
+        const loanId = req.params.id
+        const user_id = req.user.id
+
+        
+        await client.query("BEGIN")
+
+        const loan = await client.query("SELECT * FROM loans WHERE id=$1 FOR UPDATE",[loanId,user_id])
+
+        //check whether loans exist
+        if(loan.rows.length === 0) {
+            await client.query("ROLLBACK")
+            return res.status(404).json({message:"the loan doesnt exist"})
+        }
+
+        // check whether the loan is owned by me
+        if(loan.rows[0].user_id !== user_id) {
+            await client.query("ROLLBACK")
+            return res.status(403).json({message:"you dont own this loan"})
+        }
+
+        // check whether loan is returned
+        if(loan.rows[0].returned_at !== null) {
+            await client.query("ROLLBACK")
+            return res.status(404).json({message:"the loan is already returned"})
+        }
+        // Final Result
+        const result = await client.query(`
+            UPDATE loans SET returned_at = CURRENT_TIMESTAMP WHERE id=1 RETURNING *
+            `,[loanId])
+        await client.query("COMMIT")
+
+        return res.status(200).json({message:"Book returned succesfully",result:result.rows[0]})
+
+    } catch (err) {
+        await client.query("ROLLBACK")
+        console.log(err)
+        return res.status(500).json({message:"something went wrong"})
+    } finally {
+        client.release()
     }
 })
 app.listen(port,()=>{
